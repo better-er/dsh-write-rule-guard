@@ -1,14 +1,15 @@
 # dsh-write-rule-guard bundle patch：把本插件插进 profile 的 layer stack。
 # profile 引用本 bundle 或 dev_install_package 时自动挂载，全局生效。
-# 本 entry 的 config 作为插件配置注入，经 cordis 配置文件提供 enabled / rules；
-# 未配置 rules 时回退内置默认，即一条匹配全角圆括号的规则。
+# 本 entry 的 config 即安装后的默认值；enabled / joiner / rules 都可在 cordis 配置文件里直接对照修改，
+# 见 README「配置」。默认规则匹配全角圆括号，message 支持 {file}、{count}、{lines}、{pattern} 占位符。
 - insert:
     - id: dsh-write-rule-guard
       name: 'dsh-write-rule-guard'
       config:
         enabled: true
-        # 可在此覆盖规则列表，见 README「配置」；不写 rules 则用默认单条全角括号规则。
-        # rules:
-        #   - enabled: true
-        #     pattern: '[\uFF08\uFF09]'
-        #     message: 本次写入未遵循用户偏好，已被用户拒绝写入。
+        joiner: ' '
+        pwshMessage: 'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
+        rules:
+          - enabled: true
+            pattern: '[\uFF08\uFF09]'
+            message: 本次写入未遵循用户偏好，已被用户拒绝写入。请修改为不使用括号的描述方式。行：{lines}

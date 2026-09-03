@@ -3,8 +3,9 @@
  * 在 tools/pre-execute 拦截 edit / write 写入内容；同一回合内一旦命中被拦，
  * 后续 pwsh 也一并拦截并复用同一理由。
  * 配置结构：enabled 总开关 + rules 规则列表，每条规则含 enabled / pattern /
- * message 三个字段。遍历所有启用的规则，任一命中即拦，多条命中则多重报错。
- * 配置经 cordis 配置文件注入，正则匹配、报错文案均来自配置文件。
+ * message 三个字段。遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则
+ * message 决定，多规则命中时按顶层 joiner 拼接。配置经 cordis 配置文件注入，
+ * 正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
  */
 
 /** 插件名，与 cordis.patch.yml 的 name 一致。 */
@@ -12,21 +13,13 @@ export const name = 'dsh-write-rule-guard'
 
 /** 纯 host 半身，无额外服务注入。 */
 export const inject: string[] = []
-
-/** 默认正则：匹配全角圆括号。源码用 unicode 转义书写，避免与自身拦截冲突。 */
-export const DEFAULT_PATTERN = '[\uFF08\uFF09]'
-
-/** 默认报错文案：只告知被用户拦截，不透露匹配条件。{file}、{count}、{pattern} 占位符供自定义文案使用。 */
-export const DEFAULT_MESSAGE =
-  '本次写入未遵循用户偏好，已被用户拒绝写入。'
-
 /** 单条拦截规则。 */
 export interface Rule {
   /** 该条规则是否启用。 */
   enabled: boolean
-  /** 匹配禁止出现字符的正则。 */
+  /** 匹配禁止出现字符的正则，需提供有效字符串，缺省该规则的条目会被丢弃。 */
   pattern: string
-  /** 拦截时报给模型的文案，支持 {file}、{count}、{pattern} 占位符。 */
+  /** 拦截时报给模型的文案，支持 {file}、{count}、{lines}、{pattern} 占位符；整条输出即此文案填占位符后的单行结果。 */
   message: string
 }
 
@@ -34,31 +27,26 @@ export interface Rule {
 export interface Config {
   /** 总开关：是否启用拦截。 */
   enabled: boolean
-  /** 规则列表，每条含 enabled / pattern / message。 */
+  /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
+  joiner: string
+  /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
 }
 
-/** 构造一条默认规则：匹配全角圆括号。 */
-export function defaultRule(): Rule {
-  return { enabled: true, pattern: DEFAULT_PATTERN, message: DEFAULT_MESSAGE }
-}
-
-/** 把 cordis 配置规整成完整配置，缺省回退默认值；空规则列表兜底为默认规则。 */
+/** 规整 cordis 配置；rules 为空即不拦截，代码不内置默认规则。丢弃缺 pattern 的条目。 */
 export function normalizeConfig(config: Partial<Config> = {}): Config {
   const enabled = config.enabled !== undefined ? config.enabled !== false : true
+  const joiner = typeof config.joiner === 'string' ? config.joiner : ' '
   const rawRules = Array.isArray(config.rules) ? config.rules : []
-  const rules: Rule[] = rawRules.length > 0
-    ? rawRules.map((rule) => ({
-        enabled: rule.enabled !== undefined ? rule.enabled !== false : true,
-        pattern: typeof rule.pattern === 'string' && rule.pattern.trim() !== ''
-          ? rule.pattern
-          : DEFAULT_PATTERN,
-        message: typeof rule.message === 'string' && rule.message.trim() !== ''
-          ? rule.message
-          : DEFAULT_MESSAGE,
-      }))
-    : [defaultRule()]
-  return { enabled, rules }
+  const rules: Rule[] = rawRules
+    .filter((rule) => rule !== null && typeof rule === 'object'
+      && typeof rule.pattern === 'string' && rule.pattern.trim() !== '')
+    .map((rule) => ({
+      enabled: rule.enabled !== undefined ? rule.enabled !== false : true,
+      pattern: rule.pattern,
+      message: typeof rule.message === 'string' ? rule.message : '',
+    }))
+  return { enabled, joiner, rules }
 }
 
 /** 一处匹配的位置。 */
@@ -104,25 +92,29 @@ export function findMatches(content: string, pattern: string): Match[] {
   return hits
 }
 
-/** 替换报错文案里的占位符。 */
-export function fillMessage(template: string, ctx: { file: string; count: number; pattern: string }): string {
+/** 提取命中所在的不重复行号并按升序排列，供 {lines} 占位符使用。 */
+export function collectLines(hits: Match[]): number[] {
+  return [...new Set(hits.map((h) => h.line))].sort((a, b) => a - b)
+}
+
+/** 替换报错文案里的占位符。{lines} 填充为不重复行号的逗号分隔纯数字列表。 */
+export function fillMessage(template: string, ctx: { file: string; count: number; pattern: string; lines: string }): string {
   return template
     .replaceAll('{file}', ctx.file)
     .replaceAll('{count}', String(ctx.count))
+    .replaceAll('{lines}', ctx.lines)
     .replaceAll('{pattern}', ctx.pattern)
 }
 
-/** 生成拒绝原因：报错文案 + 违规行号清单。只披露行号，不披露列号与上下文片段，避免向模型透露匹配条件。 */
+/** 生成单条规则的拒绝原因：仅按规则 message 填占位符，结果一行、完全由配置决定，不追加任何明细。 */
 export function buildReason(message: string, file: string, hits: Match[], pattern: string): string {
-  const lines = [...new Set(hits.map((h) => h.line))].sort((a, b) => a - b)
-  const detail = lines.map((line) => '  - 第 ' + line + ' 行').join('\n')
-  const head = fillMessage(message, { file, count: hits.length, pattern })
-  return head + '\n' + detail
+  const lines = collectLines(hits).join(', ')
+  return fillMessage(message, { file, count: hits.length, pattern, lines })
 }
 
 /**
- * 对内容做多重报错检查。返回 null 表示放行，否则返回叠加了所有命中规则拒绝原因的文本。
- * 所有启用的规则都会检查：任一规则命中即拦，多条命中时各规则的报错文案叠加。
+ * 对内容做多重报错检查。返回 null 表示放行，否则返回用配置 joiner 拼接的拒绝文本。
+ * 各规则文案即填占位符后的单行结果；多条命中时按顶层 joiner 拼接，默认单个空格。
  */
 export function checkContent(content: string, config: Config, file: string): string | null {
   const reasons: string[] = []
@@ -132,7 +124,7 @@ export function checkContent(content: string, config: Config, file: string): str
     if (hits.length === 0) continue
     reasons.push(buildReason(rule.message, file, hits, rule.pattern))
   }
-  return reasons.length > 0 ? reasons.join('\n\n') : null
+  return reasons.length > 0 ? reasons.join(config.joiner) : null
 }
 
 /** edit / write 各自承载新内容的参数字段名。 */

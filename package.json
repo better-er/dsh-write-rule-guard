@@ -1,6 +1,6 @@
 {
   "name": "dsh-write-rule-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "禁止在 edit/write 写入内容中使用匹配正则的字符，可在 cordis 配置文件里配置正则与报错文案。host 半身在工具执行前拦截 edit / write 的写入内容。构建方案，host 单半身。",
   "keywords": [
     "deepseek-harness",

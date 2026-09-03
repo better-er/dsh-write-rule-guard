@@ -27,7 +27,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - run: pnpm publish --provenance --access public
+      - run: pnpm publish --no-git-checks --provenance --access public
       - uses: softprops/action-gh-release@v2
         with:
           draft: true

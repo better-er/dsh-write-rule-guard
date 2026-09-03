@@ -13,6 +13,10 @@ export const name = 'dsh-write-rule-guard'
 
 /** 纯 host 半身，无额外服务注入。 */
 export const inject: string[] = []
+
+/** 默认 pwsh 拦截文案：命中后连坐拦 pwsh 时使用。{reason} 占位符可嵌入原写入理由。 */
+export const DEFAULT_PWSH_MESSAGE =
+  'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
 /** 单条拦截规则。 */
 export interface Rule {
   /** 该条规则是否启用。 */
@@ -29,6 +33,8 @@ export interface Config {
   enabled: boolean
   /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
   joiner: string
+  /** 本回合命中写入规则后，连坐拦截 pwsh 时单独使用的文案，支持 {reason} 占位符嵌入原写入理由；空则用内置默认文案。 */
+  pwshMessage: string
   /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
 }
@@ -37,6 +43,9 @@ export interface Config {
 export function normalizeConfig(config: Partial<Config> = {}): Config {
   const enabled = config.enabled !== undefined ? config.enabled !== false : true
   const joiner = typeof config.joiner === 'string' ? config.joiner : ' '
+  const pwshMessage = typeof config.pwshMessage === 'string' && config.pwshMessage.trim() !== ''
+    ? config.pwshMessage
+    : DEFAULT_PWSH_MESSAGE
   const rawRules = Array.isArray(config.rules) ? config.rules : []
   const rules: Rule[] = rawRules
     .filter((rule) => rule !== null && typeof rule === 'object'
@@ -46,7 +55,7 @@ export function normalizeConfig(config: Partial<Config> = {}): Config {
       pattern: rule.pattern,
       message: typeof rule.message === 'string' ? rule.message : '',
     }))
-  return { enabled, joiner, rules }
+  return { enabled, joiner, pwshMessage, rules }
 }
 
 /** 一处匹配的位置。 */
@@ -152,8 +161,11 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     const scope = exec.agent?.id ?? null
     if (exec.name === 'pwsh') {
       if (scope !== null) {
-        const reason = latch.get(scope)
-        if (reason !== undefined) return { kind: 'deny', reason }
+        const original = latch.get(scope)
+        if (original !== undefined) {
+          const reason = cfg.pwshMessage.replaceAll('{reason}', original)
+          return { kind: 'deny', reason }
+        }
       }
       return next()
     }

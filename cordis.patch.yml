@@ -8,6 +8,7 @@
       config:
         enabled: true
         joiner: ' '
+        pwshMessage: 'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
         rules:
           - enabled: true
             pattern: '[\uFF08\uFF09]'

@@ -1,7 +1,11 @@
 /**
  * dsh-write-rule-guard — host 半身。
- * 在 tools/pre-execute 拦截 edit / write 写入内容；同一回合内一旦命中被拦，
- * 后续 pwsh 也一并拦截并复用同一理由。
+ * 状态机：edit / write 失败时把当前回合切到「禁用 pwsh」态，之后某次
+ * edit / write 真实执行成功则解除禁用。工具真正执行前拦截 edit / write 的
+ * 写入内容；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果。
+ * 「失败」指内容命中规则被本插件拒掉、或 edit / write 执行返回错误；
+ * 「成功」指内容未命中规则且该调用真实执行无错。禁 pwsh 态只在本回合内
+ * 生效，回合边界一律重置为允许。
  * 配置结构：enabled 总开关 + rules 规则列表，每条规则含 enabled / pattern /
  * message 三个字段。遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则
  * message 决定，多规则命中时按顶层 joiner 拼接。配置经 cordis 配置文件注入，
@@ -14,7 +18,7 @@ export const name = 'dsh-write-rule-guard'
 /** 纯 host 半身，无额外服务注入。 */
 export const inject: string[] = []
 
-/** 默认 pwsh 拦截文案：命中后连坐拦 pwsh 时使用。{reason} 占位符可嵌入原写入理由。 */
+/** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次 edit/write 失败理由。 */
 export const DEFAULT_PWSH_MESSAGE =
   'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
 /** 单条拦截规则。 */
@@ -33,7 +37,7 @@ export interface Config {
   enabled: boolean
   /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
   joiner: string
-  /** 本回合命中写入规则后，连坐拦截 pwsh 时单独使用的文案，支持 {reason} 占位符嵌入原写入理由；空则用内置默认文案。 */
+  /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次 edit/write 失败。 */
   pwshMessage: string
   /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
@@ -141,7 +145,14 @@ const FILE_PATH_KEY = 'file_path'
 const NEW_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write: 'content' }
 
 /**
- * 插件入口：在工具执行前拦截 edit / write；本回合内一旦命中正则被拦，后续 pwsh 也一并拦下并复用同一理由。
+ * 插件入口：按 edit / write 的成败维护「禁 pwsh」状态机。
+ * 状态机规则：
+ * - edit / write 失败，即内容命中规则被拦或真实执行返回错误 → 进入禁 pwsh 态，
+ *   记录该失败理由；
+ * - edit / write 成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态；
+ * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason}
+ *   替换为最近一次失败理由；
+ * - 禁态只在本回合内生效，回合边界一律重置为允许 pwsh。
  * 配置来自 cordis 配置文件的 enabled / rules，不再提供浏览器设置界面。
  * @param ctx - 宿主上下文。
  * @param config - cordis 配置，含 enabled / rules 可选字段。
@@ -149,23 +160,26 @@ const NEW_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write: 'c
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config: Partial<Config> = {}): void {
   const source: () => Config = () => normalizeConfig(config)
-  /** 本回合内已因命中正则被拦后的拒绝理由，按会话隔离；回合边界时清空。 */
-  const latch = new Map<string, string>()
-  // 回合开始或结束时清空该会话的锁存，避免泄漏到下一个用户回合
+  /** 每个会话当前是否处于禁 pwsh 态，值为最近一次 edit/write 失败理由；键与会话 id 相同。 */
+  const locked = new Map<string, string>()
+  // 回合开始或结束时重置禁态，避免泄漏到下一个用户回合；禁态也会在成功写入后解除
   ctx.on('session/event', (session: any, event: any) => {
-    if (event.type === 'turn/start' || event.type === 'turn/end') latch.delete(session.id)
+    if (event.type === 'turn/start' || event.type === 'turn/end') locked.delete(session.id)
   })
+  const setLocked = (scope: string | null, reason: string): void => {
+    if (scope !== null) locked.set(scope, reason)
+  }
+  const lockedReason = (scope: string | null): string | undefined =>
+    scope !== null ? locked.get(scope) : undefined
+  // pre-execute：内容规则命中视为 edit/write 失败，立即禁用 pwsh；pwsh 在禁态时被拦
   ctx.on('tools/pre-execute', async (exec: any, next: () => Promise<unknown>) => {
     const cfg = source()
     if (cfg.enabled !== true) return next()
     const scope = exec.agent?.id ?? null
     if (exec.name === 'pwsh') {
-      if (scope !== null) {
-        const original = latch.get(scope)
-        if (original !== undefined) {
-          const reason = cfg.pwshMessage.replaceAll('{reason}', original)
-          return { kind: 'deny', reason }
-        }
+      const reason = lockedReason(scope)
+      if (reason !== undefined) {
+        return { kind: 'deny', reason: cfg.pwshMessage.replaceAll('{reason}', reason) }
       }
       return next()
     }
@@ -177,7 +191,25 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     const filePath = typeof args?.[FILE_PATH_KEY] === 'string' ? args[FILE_PATH_KEY] : '未知路径'
     const reason = checkContent(newContent, cfg, filePath)
     if (reason === null) return next()
-    if (scope !== null) latch.set(scope, reason)
+    setLocked(scope, reason)
     return { kind: 'deny', reason }
+  })
+  // post-execute：内容未被规则拦的 edit/write 走真实执行，用结果成败收口状态。
+  // 规则拦掉的调用也会以 isError 结果流经此处，同样进入失败态，语义一致。
+  ctx.on('tools/post-execute', async (exec: any, result: any, next: () => Promise<unknown>) => {
+    const cfg = source()
+    if (cfg.enabled !== true) return next()
+    if (exec.name !== 'edit' && exec.name !== 'write') return next()
+    const scope = exec.agent?.id ?? null
+    if (result?.isError === true) {
+      const message = typeof result?.error?.message === 'string' && result.error.message.trim() !== ''
+        ? result.error.message
+        : 'edit/write 执行失败'
+      setLocked(scope, message)
+    } else if (scope !== null) {
+      // 真实执行成功 → 解除禁 pwsh 态
+      locked.delete(scope)
+    }
+    return next()
   })
 }

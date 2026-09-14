@@ -1,8 +1,8 @@
 # dsh·写入规则守卫插件
 
-禁止在 edit / write / edit_remote / write_remote 写入内容里出现匹配配置正则的字符。工具真正执行前直接拦截并报错；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果，不再自动追加任何明细或堆栈。按 edit / write / edit_remote / write_remote 的成败维护「禁 pwsh」状态机：本回合内某次 edit / write / edit_remote / write_remote 失败，即内容命中规则被拦或真实执行报错，会把 pwsh 切到禁用态，防止改用 pwsh 绕过写文件；此后只要某次 edit / write 真实执行成功，pwsh 就解除禁用，回合结束仍回到允许。
+在写入类工具执行前按配置的正则拦截写入内容，命中即拒绝并把 pwsh 切到禁用态，防止改用 pwsh 绕过；被拦截工具一旦成功执行，本回合内即解除禁用，回合结束恢复允许。
 
-默认规则经 cordis.patch.yml 随安装注入，匹配全角圆括号，也可在 cordis 配置文件里改成任意正则并自定义报错文案。代码不内置默认规则，rules 为空即不拦截。标准可安装 dsh 插件，host 单半身，设置经 cordis 配置文件注入，不提供界面配置 UI。
+默认规则与工具范围由 cordis.patch.yml 随安装注入，匹配全角圆括号，默认覆盖 edit / write / edit_remote / write_remote，都可在配置文件里改。host 单半身，代码不内置默认规则，rules 为空即不拦截。
 
 ## 工作方式
 
@@ -18,9 +18,9 @@ host 半身 lib/index.js 按 edit / write / edit_remote / write_remote 的成败
 | --- | --- | --- |
 | enabled | true | 是否启用拦截 |
 | joiner | 单个空格 | 多规则命中时拼接各规则文案的分隔符，可填空格或 \n 等，由配置决定形态 |
-| pwshMessage | 内置默认文案 | 处于禁 pwsh 态时拦截 pwsh 的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则回落到内置默认。禁 pwsh 态指本回合内某次 edit/write 失败 |
+| pwshMessage | 内置默认文案 | 处于禁 pwsh 态时拦截 pwsh 的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则回落到内置默认。禁 pwsh 态指本回合内某次被拦截工具失败 |
 | rules | patch 注入的单条匹配全角圆括号的默认规则，为空则不拦截 | 规则列表，每条含 enabled / pattern / message |
-| extraTools | patch 注入的 edit_remote 与 write_remote | 额外拦截的工具列表，每项含 name 和 contentKey；给空数组则只拦截内置的 edit / write |
+| extraTools | patch 注入的 edit_remote 与 write_remote | 额外拦截的工具列表，每项含 name 和 contentKey；给空数组则只拦截内置的 edit / write。文件路径参数固定按 file_path 读取，路径字段名不同的工具命中规则时 {file} 会填成「未知路径」；与内置 edit / write 同名的条目会覆盖内置映射 |
 
 安装即随 cordis.patch.yml 注入一条默认规则，可直接对照修改；rules 为空则不拦截。每条规则独立检查、任一命中即拦，缺 pattern 的条目被忽略。单条规则命中的输出即该规则 message 填占位符后的单行文本；多条命中时用顶层 joiner 拼接，不再自动追加明细。
 
@@ -35,11 +35,11 @@ pwshMessage 缺省或为空时回落代码内置默认文案，patch 也注入�
   config:
     enabled: true
     joiner: ' '
-    pwshMessage: 'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
+    pwshMessage: 'あー！差点就让你混过去了！偷偷用 pwsh 绕过可不行哦！改对了再来吧！'
     rules:
       - enabled: true
         pattern: '[\uFF08\uFF09]'
-        message: 本次写入未遵循用户偏好，已被用户拒绝写入。请修改为不使用括号的描述方式。行：{lines}
+        message: 本次写入未遵循用户偏好，已被用户拒绝写入。请修改为不使用括号的描述方式。行：{lines}；文件：{file}
     extraTools:
       - name: edit_remote
         contentKey: new_string
@@ -57,7 +57,7 @@ pattern 支持任意合法正则；若某条 pattern 是非法正则，该条保
 
 ## 状态机与已知局限
 
-对每个会话，按 edit / write 的结果维护一个只在当前回合内有效的开关：
+对每个会话，按被拦截工具的结果维护一个只在当前回合内有效的开关：
 
 | 事件 | 结果 |
 | --- | --- |

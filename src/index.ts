@@ -18,7 +18,7 @@ export const inject: string[] = []
 
 /** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次拦截失败理由。 */
 export const DEFAULT_PWSH_MESSAGE =
-  'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
+  'あー！差点就让你混过去了！偷偷用 pwsh 绕过可不行哦！改对了再来吧！'
 /** 单条拦截规则。 */
 export interface Rule {
   /** 该条规则是否启用。 */
@@ -35,7 +35,7 @@ export interface Config {
   enabled: boolean
   /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
   joiner: string
-  /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次 edit/write 失败。 */
+  /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次被拦截工具失败。 */
   pwshMessage: string
   /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
@@ -43,9 +43,12 @@ export interface Config {
   extraTools: ExtraTool[]
 }
 
-/** 额外拦截的工具配置。 */
+/**
+ * 额外拦截的工具配置。
+ * 文件路径参数固定按 file_path 读取，路径字段名不同的工具命中规则时 {file} 会填成「未知路径」。
+ */
 export interface ExtraTool {
-  /** 工具名，如 edit_remote。 */
+  /** 工具名，如 edit_remote；与内置 edit / write 同名时会覆盖内置映射。 */
   name: string
   /** 承载新内容的参数字段名，如 new_string。 */
   contentKey: string
@@ -173,7 +176,7 @@ const BUILTIN_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config: Partial<Config> = {}): void {
   const source: () => Config = () => normalizeConfig(config)
-  /** 合并内置和配置的 extraTools，返回完整的工具 → contentKey 映射。 */
+  /** 合并内置和配置的 extraTools，返回完整的工具 → contentKey 映射；extraTools 中与内置同名的条目会覆盖内置。 */
   const getToolKeys = (cfg: Config): Record<string, string> => {
     const keys = { ...BUILTIN_CONTENT_KEYS }
     for (const t of cfg.extraTools) keys[t.name] = t.contentKey

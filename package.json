@@ -11,9 +11,10 @@
     "paren",
     "regex",
     "edit",
-    "remote_edit",
-    "remote_write",
+    "edit_remote",
+    "extraTools",
     "write",
+    "write_remote",
     "拦截"
   ],
   "repository": {

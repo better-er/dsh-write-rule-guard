@@ -1,7 +1,7 @@
 {
   "name": "dsh-write-rule-guard",
-  "version": "0.2.2",
-  "description": "禁止在 edit/write 写入内容中使用匹配正则的字符，可在 cordis 配置文件里配置正则与报错文案。host 半身在工具执行前拦截 edit / write 的写入内容。构建方案，host 单半身。",
+  "version": "0.3.0",
+  "description": "禁止在 edit/write 写入内容中使用匹配正则的字符，extraTools 可额外配置拦截更多工具。可在 cordis 配置文件里配置正则与报错文案。host 单半身。",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -11,7 +11,10 @@
     "paren",
     "regex",
     "edit",
+    "edit_remote",
+    "extraTools",
     "write",
+    "write_remote",
     "拦截"
   ],
   "repository": {
@@ -35,13 +38,18 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=26.3.1"
+  },
   "scripts": {
     "prepare": "node build.mjs",
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
   },
   "dsh": {
     "bundle": {

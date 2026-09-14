@@ -1,15 +1,13 @@
 /**
  * dsh-write-rule-guard — host 半身。
- * 状态机：edit / write 失败时把当前回合切到「禁用 pwsh」态，之后某次
- * edit / write 真实执行成功则解除禁用。工具真正执行前拦截 edit / write 的
- * 写入内容；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果。
- * 「失败」指内容命中规则被本插件拒掉、或 edit / write 执行返回错误；
- * 「成功」指内容未命中规则且该调用真实执行无错。禁 pwsh 态只在本回合内
- * 生效，回合边界一律重置为允许。
- * 配置结构：enabled 总开关 + rules 规则列表，每条规则含 enabled / pattern /
- * message 三个字段。遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则
- * message 决定，多规则命中时按顶层 joiner 拼接。配置经 cordis 配置文件注入，
- * 正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
+ * 状态机：被拦截工具失败时把当前回合切到「禁用 pwsh」态，之后某次写入成功则解除禁用。
+ * 工具真正执行前拦截写入内容；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果。
+ * 「失败」指内容命中规则被本插件拒掉、或执行返回错误；「成功」指内容未命中规则且该调用真实执行无错。
+ * 禁 pwsh 态只在本回合内生效，回合边界一律重置为允许。
+ * 配置结构：enabled 总开关 + rules 规则列表 + extraTools 额外工具列表。
+ * 遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则 message 决定，多规则命中时按顶层 joiner 拼接。
+ * 配置经 cordis 配置文件注入，正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
+ * extraTools 让用户自行配置额外拦截的工具与参数名，默认值由 cordis.patch.yml 注入，代码不兜底。
  */
 
 /** 插件名，与 cordis.patch.yml 的 name 一致。 */
@@ -18,9 +16,9 @@ export const name = 'dsh-write-rule-guard'
 /** 纯 host 半身，无额外服务注入。 */
 export const inject: string[] = []
 
-/** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次 edit/write 失败理由。 */
+/** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次拦截失败理由。 */
 export const DEFAULT_PWSH_MESSAGE =
-  'あー！差点就让你混过去了！这段不行哦，改对了再写，pwsh 也不行哦！'
+  'あー！差点就让你混过去了！偷偷用 pwsh 绕过可不行哦！改对了再来吧！'
 /** 单条拦截规则。 */
 export interface Rule {
   /** 该条规则是否启用。 */
@@ -37,10 +35,23 @@ export interface Config {
   enabled: boolean
   /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
   joiner: string
-  /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次 edit/write 失败。 */
+  /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次被拦截工具失败。 */
   pwshMessage: string
   /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
+  /** 额外拦截的工具列表，每项含 name 与 contentKey；默认值由 patch 注入，为空则只拦截内置的 edit / write。 */
+  extraTools: ExtraTool[]
+}
+
+/**
+ * 额外拦截的工具配置。
+ * 文件路径参数固定按 file_path 读取，路径字段名不同的工具命中规则时 {file} 会填成「未知路径」。
+ */
+export interface ExtraTool {
+  /** 工具名，如 edit_remote；与内置 edit / write 同名时会覆盖内置映射。 */
+  name: string
+  /** 承载新内容的参数字段名，如 new_string。 */
+  contentKey: string
 }
 
 /** 规整 cordis 配置；rules 为空即不拦截，代码不内置默认规则。丢弃缺 pattern 的条目。 */
@@ -59,7 +70,13 @@ export function normalizeConfig(config: Partial<Config> = {}): Config {
       pattern: rule.pattern,
       message: typeof rule.message === 'string' ? rule.message : '',
     }))
-  return { enabled, joiner, pwshMessage, rules }
+  const rawExtra = Array.isArray(config.extraTools) ? config.extraTools : []
+  const extraTools: ExtraTool[] = rawExtra
+    .filter((t) => t !== null && typeof t === 'object'
+      && typeof t.name === 'string' && t.name.trim() !== ''
+      && typeof t.contentKey === 'string' && t.contentKey.trim() !== '')
+    .map((t) => ({ name: t.name, contentKey: t.contentKey }))
+  return { enabled, joiner, pwshMessage, rules, extraTools }
 }
 
 /** 一处匹配的位置。 */
@@ -140,27 +157,31 @@ export function checkContent(content: string, config: Config, file: string): str
   return reasons.length > 0 ? reasons.join(config.joiner) : null
 }
 
-/** edit / write 各自承载新内容的参数字段名。 */
+/** 内置拦截的 edit / write 各自承载新内容的参数字段名。 */
 const FILE_PATH_KEY = 'file_path'
-const NEW_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write: 'content' }
+const BUILTIN_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write: 'content' }
 
 /**
- * 插件入口：按 edit / write 的成败维护「禁 pwsh」状态机。
+ * 插件入口：按被拦截工具的成败维护「禁 pwsh」状态机。
  * 状态机规则：
- * - edit / write 失败，即内容命中规则被拦或真实执行返回错误 → 进入禁 pwsh 态，
- *   记录该失败理由；
- * - edit / write 成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态；
- * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason}
- *   替换为最近一次失败理由；
+ * - 被拦截工具失败，即内容命中规则被拦或真实执行返回错误 → 进入禁 pwsh 态，记录该失败理由；
+ * - 被拦截工具成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态；
+ * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason} 替换为最近一次失败理由；
  * - 禁态只在本回合内生效，回合边界一律重置为允许 pwsh。
- * 配置来自 cordis 配置文件的 enabled / rules，不再提供浏览器设置界面。
+ * 拦截工具：edit、write、edit_remote、write_remote。
+ * 配置来自 cordis 配置文件的 enabled / rules / extraTools，不再提供浏览器设置界面。
  * @param ctx - 宿主上下文。
- * @param config - cordis 配置，含 enabled / rules 可选字段。
+ * @param config - cordis 配置，含 enabled / rules / extraTools 可选字段。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config: Partial<Config> = {}): void {
   const source: () => Config = () => normalizeConfig(config)
-  /** 每个会话当前是否处于禁 pwsh 态，值为最近一次 edit/write 失败理由；键与会话 id 相同。 */
+  /** 合并内置和配置的 extraTools，返回完整的工具 → contentKey 映射；extraTools 中与内置同名的条目会覆盖内置。 */
+  const getToolKeys = (cfg: Config): Record<string, string> => {
+    const keys = { ...BUILTIN_CONTENT_KEYS }
+    for (const t of cfg.extraTools) keys[t.name] = t.contentKey
+    return keys
+  }
   const locked = new Map<string, string>()
   // 回合开始或结束时重置禁态，避免泄漏到下一个用户回合；禁态也会在成功写入后解除
   ctx.on('session/event', (session: any, event: any) => {
@@ -171,7 +192,7 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
   }
   const lockedReason = (scope: string | null): string | undefined =>
     scope !== null ? locked.get(scope) : undefined
-  // pre-execute：内容规则命中视为 edit/write 失败，立即禁用 pwsh；pwsh 在禁态时被拦
+  // pre-execute：内容规则命中视为写入工具失败，立即禁用 pwsh；pwsh 在禁态时被拦
   ctx.on('tools/pre-execute', async (exec: any, next: () => Promise<unknown>) => {
     const cfg = source()
     if (cfg.enabled !== true) return next()
@@ -183,9 +204,10 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
       }
       return next()
     }
-    if (exec.name !== 'edit' && exec.name !== 'write') return next()
+    const toolKeys = getToolKeys(cfg)
+    if (!toolKeys[exec.name]) return next()
     const args = exec.arguments
-    const newContentKey = NEW_CONTENT_KEYS[exec.name]
+    const newContentKey = toolKeys[exec.name]
     const newContent = typeof args?.[newContentKey] === 'string' ? args[newContentKey] : undefined
     if (newContent === undefined || newContent === '') return next()
     const filePath = typeof args?.[FILE_PATH_KEY] === 'string' ? args[FILE_PATH_KEY] : '未知路径'
@@ -194,17 +216,18 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     setLocked(scope, reason)
     return { kind: 'deny', reason }
   })
-  // post-execute：内容未被规则拦的 edit/write 走真实执行，用结果成败收口状态。
+  // post-execute：内容未被规则拦的写入工具走真实执行，用结果成败收口状态。
   // 规则拦掉的调用也会以 isError 结果流经此处，同样进入失败态，语义一致。
   ctx.on('tools/post-execute', async (exec: any, result: any, next: () => Promise<unknown>) => {
     const cfg = source()
     if (cfg.enabled !== true) return next()
-    if (exec.name !== 'edit' && exec.name !== 'write') return next()
+    const toolKeys = getToolKeys(cfg)
+    if (!toolKeys[exec.name]) return next()
     const scope = exec.agent?.id ?? null
     if (result?.isError === true) {
       const message = typeof result?.error?.message === 'string' && result.error.message.trim() !== ''
         ? result.error.message
-        : 'edit/write 执行失败'
+        : '写入工具执行失败'
       setLocked(scope, message)
     } else if (scope !== null) {
       // 真实执行成功 → 解除禁 pwsh 态

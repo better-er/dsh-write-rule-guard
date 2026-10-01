@@ -35,7 +35,7 @@ pwshMessage 缺省或为空时回落代码内置默认文案，patch 也注入�
   config:
     enabled: true
     joiner: ' '
-    pwshMessage: 'あー！差点就让你混过去了！偷偷用 pwsh 绕过可不行哦！改对了再来吧！'
+    pwshMessage: 'あー！坏孩子被抓住啦！用 pwsh 绕过可不行哦！先改对了再来吧！'
     rules:
       - enabled: true
         pattern: '[\uFF08\uFF09]'

@@ -18,7 +18,7 @@ export const inject: string[] = []
 
 /** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次拦截失败理由。 */
 export const DEFAULT_PWSH_MESSAGE =
-  'あー！差点就让你混过去了！偷偷用 pwsh 绕过可不行哦！改对了再来吧！'
+  'あー！坏孩子被抓住啦！用 pwsh 绕过可不行哦！先改对了再来吧！'
 /** 单条拦截规则。 */
 export interface Rule {
   /** 该条规则是否启用。 */

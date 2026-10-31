@@ -2,9 +2,15 @@
 
 在写入类工具执行前按配置的正则拦截写入内容，命中即拒绝并把 `pwsh` 切到禁用态，防止改用 `pwsh` 绕过；被拦截工具一旦成功执行，本回合内即解除禁用，回合结束恢复允许。
 
-默认规则与工具范围由 `cordis.patch.yml` 随安装注入，匹配全角圆括号，默认覆盖 `edit` / `write` / `edit_remote` / `write_remote`，都可在配置文件里改。host 单半身，代码不内置默认规则，`rules` 为空即不拦截。
+默认规则与工具范围由 `cordis.patch.yml` 随安装注入，匹配全角圆括号，默认覆盖 `edit` / `write` / `edit_remote` / `write_remote`，都可在配置文件里改。代码不内置默认规则，`rules` 为空即不拦截。
+
+设置页里有一页「写入规则守卫」，逐条列出规则，每条一个开关，另有总开关。开关写入活动 profile 的 Cordis patch，和手改配置文件等价，关掉的规则对所有会话都不再检查。
+
+只想在某个会话里临时关掉某条规则时，切到会话视图的「写入规则」页，按条目开关。它只写当前会话的豁免，不碰全局设置；豁免按规则 pattern 记在 `sessionOverrides` 里。
 
 ## 工作方式
+
+设置页由 client 半身绘制，通过 `settings` 远端的 `describe` 与 `update` 读写配置，不另存状态。
 
 host 半身 `lib/index.js` 按 `edit` / `write` / `edit_remote` / `write_remote` 的成败维护「禁 `pwsh`」状态机。`pre-execute` 里拦截 `edit` / `write` / `edit_remote` / `write_remote` 的写入内容，按配置的 `enabled` / `rules` 逐条检查，命中即视为失败并进入禁 `pwsh` 态；`post-execute` 里按真实执行结果收口状态——返回错误视为失败继续禁用，执行成功则解除禁用。`pwsh` 的放行与否由当前禁态决定。
 
@@ -12,7 +18,7 @@ host 半身 `lib/index.js` 按 `edit` / `write` / `edit_remote` / `write_remote`
 
 - 工具：常态拦 `edit` 和 `write` 的写入内容，patch 默认再拦 [dsh-remote-file-system](https://github.com/better-er/dsh-remote-file-system) 的 `edit_remote` 与 `write_remote`，也可自行配置更多工具；被拦截工具失败后，后续的 `pwsh` 进入禁用态被拦，文案由 `pwshMessage` 决定，缺省用内置默认。此后某次写入工具真实执行成功即解除禁用，回合结束一律回到允许。
 - 字段：`edit` 的 `new_string`、`write` 的 `content`；`extraTools` 的工具按各自 `contentKey` 提取新内容，默认 `edit_remote` 取 `new_string`、`write_remote` 取 `content`。
-- 场景：全局所有会话生效，`run_code` 内嵌的 `edit` / `write` 子调用同样被捕获。
+- 场景：默认全局所有会话生效，`run_code` 内嵌的 `edit` / `write` 子调用同样被捕获；会话视图的「写入规则」页可以只给当前会话关掉指定条目。
 
 ## 宣传片
 
@@ -24,13 +30,13 @@ host 半身 `lib/index.js` 按 `edit` / `write` / `edit_remote` / `write_remote`
 
 ## 安装
 
-**从 GitHub 安装**：源码在 `src/`，`lib/` 不入仓库，安装时 npm 会触发 `prepare` 脚本现场构建。
+**从 GitHub 安装**：源码在 `src/`，`lib/` 不入仓库，安装时 npm 会触发 `prepare` 脚本现场构建出 `lib/index.js` 与 `lib/client.js`。
 
 ```powershell
 dsh plugin --profile web add github:better-er/dsh-write-rule-guard
 ```
 
-**从 npm 安装**：包内已含构建产物 `lib/index.js`，安装时不再构建。
+**从 npm 安装**：包内已含构建产物 `lib/index.js` 与 `lib/client.js`，安装时不再构建。
 
 ```powershell
 dsh plugin --profile web add dsh-write-rule-guard
@@ -57,10 +63,13 @@ dsh plugin --profile web remove dsh-write-rule-guard
 | `enabled` | true | 是否启用拦截 |
 | `joiner` | 单个空格 | 多规则命中时拼接各规则文案的分隔符，可填空格或 \n 等，由配置决定形态 |
 | `pwshMessage` | 内置默认文案 | 处于禁 `pwsh` 态时拦截 `pwsh` 的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则回落到内置默认。禁 `pwsh` 态指本回合内某次被拦截工具失败 |
-| `rules` | patch 注入的单条匹配全角圆括号的默认规则，为空则不拦截 | 规则列表，每条含 `enabled` / `pattern` / `message` |
+| `rules` | patch 注入的单条匹配全角圆括号的默认规则，为空则不拦截 | 规则列表，每条含 `enabled` / `title` / `pattern` / `message`。`title` 只用于设置页显示，留空则显示正则本身 |
 | `extraTools` | patch 注入的 `edit_remote` 与 `write_remote` | 额外拦截的工具列表，每项含 `name` 和 `contentKey`；给空数组则只拦截内置的 `edit` / `write`。文件路径参数固定按 `file_path` 读取，路径字段名不同的工具命中规则时 {file} 会填成「未知路径」；与内置 `edit` / `write` 同名的条目会覆盖内置映射 |
+| `sessionOverrides` | `{}` | 会话级豁免，键为会话 id，值为该会话关掉的规则 `pattern` 列表。由会话视图的「写入规则」页写入 |
 
-安装即随 `cordis.patch.yml` 注入一条默认规则，可直接对照修改；`rules` 为空则不拦截。每条规则独立检查、任一命中即拦，缺 `pattern` 的条目被忽略。单条规则命中的输出即该规则 `message` 填占位符后的单行文本；多条命中时用顶层 `joiner` 拼接，不再自动追加明细。
+安装即随 `cordis.patch.yml` 注入一条默认规则，可直接对照修改；`rules` 为空则不拦截。设置页的开关与配置文件改的是同一份配置，两边都改以 profile 的覆盖层为准。
+
+在设置页或会话页改过之后，完整配置会作为 profile 覆盖层固定下来，之后升级插件不会自动更新它。想重新跟随插件自带的默认值，把 profile 的 `cordis.patch.yml` 里本插件的 `config` 删掉即可。每条规则独立检查、任一命中即拦，缺 `pattern` 的条目被忽略。单条规则命中的输出即该规则 `message` 填占位符后的单行文本；多条命中时用顶层 `joiner` 拼接，不再自动追加明细。
 
 `pwshMessage` 缺省或为空时回落代码内置默认文案，patch 也注入了同款，可在配置文件里改成别的写法；想带上原写入理由就在文案里加 {reason} 占位符。
 
@@ -76,6 +85,7 @@ dsh plugin --profile web remove dsh-write-rule-guard
     pwshMessage: 'あー！坏孩子被抓住啦！用 pwsh 绕过可不行哦！先改对了再来吧！'
     rules:
       - enabled: true
+        title: 全角括号
         pattern: '[\uFF08\uFF09]'
         message: 本次写入未遵循用户偏好，已被用户拒绝写入。请修改为不使用括号的描述方式。行：{lines}；文件：{file}
     extraTools:
@@ -106,12 +116,12 @@ dsh plugin --profile web remove dsh-write-rule-guard
 
 ## 构建
 
-源码为 TypeScript，host 半身 `src/index.ts`，用 esbuild 打包到 `lib/index.js`。host 产物无外部运行时依赖，esbuild 仅作 devDependency。
+源码为 TypeScript：host 半身 `src/index.ts`，client 半身 `src/client/index.ts` 与 `src/client/panel.tsx`，用 tsdown 分别打包到 `lib/index.js` 与 `lib/client.js`。产物本身不带运行时依赖，tsdown 仅作 devDependency。
 
 ```powershell
 pnpm install
-pnpm build    # 生成 lib/index.js
-pnpm watch    # 监听 src/index.ts 增量重建
+pnpm build    # 生成 lib/index.js 与 lib/client.js
+pnpm watch    # 增量重建
 ```
 
 ## 导出

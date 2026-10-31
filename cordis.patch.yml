@@ -1,7 +1,8 @@
 # dsh-write-rule-guard bundle patch：把本插件插进 profile 的 layer stack。
 # profile 引用本 bundle 或 dev_install_package 时自动挂载，全局生效。
 # 本 entry 的 config 即安装后的默认值；enabled / joiner / rules / extraTools 都可在 cordis 配置文件里直接对照修改，
-# 见 README「配置」。默认规则匹配全角圆括号，message 支持 {file}、{count}、{lines}、{pattern} 占位符。
+# 也可在设置页「写入规则守卫」里逐条开关规则，两者改的是同一份配置。见 README「配置」。
+# 默认规则匹配全角圆括号，message 支持 {file}、{count}、{lines}、{pattern} 占位符；title 只在设置页显示。
 # extraTools 默认拦截 dsh-remote-file-system 的 edit_remote 与 write_remote；给空数组则只拦内置的 edit / write。
 - insert:
     - id: dsh-write-rule-guard
@@ -17,5 +18,6 @@
             contentKey: content
         rules:
           - enabled: true
+            title: 全角括号
             pattern: '[\uFF08\uFF09]'
             message: 本次写入未遵循用户偏好，已被用户拒绝写入。请修改为不使用括号的描述方式。行：{lines}；文件：{file}

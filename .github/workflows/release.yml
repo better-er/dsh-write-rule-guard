@@ -114,8 +114,11 @@ jobs:
         run: |
           test -f lib/index.js
           test -f lib/index.js.map
+          test -f lib/index.d.ts
+          test -f lib/client.js
+          test -f lib/client.js.map
           test -f cordis.patch.yml
-          echo "构建产物齐全：lib/index.js · lib/index.js.map · cordis.patch.yml"
+          echo "构建产物齐全：lib/index.js · lib/index.d.ts · lib/client.js · cordis.patch.yml"
 
       # Trusted Publishing：npm 凭 workflow 的 OIDC 身份直接授权，无需 NPM_TOKEN；--provenance 会在 npm 上附构建来源证明。
       - name: Publish to npm

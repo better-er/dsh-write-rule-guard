@@ -8,12 +8,18 @@
  * 遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则 message 决定，多规则命中时按顶层 joiner 拼接。
  * 配置经 cordis 配置文件注入，正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
  * extraTools 让用户自行配置额外拦截的工具与参数名，默认值由 cordis.patch.yml 注入，代码不兜底。
+ *
+ * 配置字段全部声明为 volatile，因此会进入活动 profile 的插件设置表单；设置页由 client 半身自建，
+ * 用来逐条开关规则，写入仍落在 profile 的 Cordis patch 里，和手改配置文件等价。
  */
+
+import type { Volatile } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
 
 /** 插件名，与 cordis.patch.yml 的 name 一致。 */
 export const name = 'dsh-write-rule-guard'
 
-/** 纯 host 半身，无额外服务注入。 */
+/** 只需要可选的 settings 服务，声明为 inject 之外由 apply 内部按需子级订阅，缺了也能跑。 */
 export const inject: string[] = []
 
 /** 默认 pwsh 拦截文案：处于禁 pwsh 态时使用。{reason} 占位符可嵌入最近一次拦截失败理由。 */
@@ -23,6 +29,8 @@ export const DEFAULT_PWSH_MESSAGE =
 export interface Rule {
   /** 该条规则是否启用。 */
   enabled: boolean
+  /** 设置页里显示的名字；留空则显示正则本身。 */
+  title?: string
   /** 匹配禁止出现字符的正则，需提供有效字符串，缺省该规则的条目会被丢弃。 */
   pattern: string
   /** 拦截时报给模型的文案，支持 {file}、{count}、{lines}、{pattern} 占位符；整条输出即此文案填占位符后的单行结果。 */
@@ -37,11 +45,57 @@ export interface Config {
   joiner: string
   /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次被拦截工具失败。 */
   pwshMessage: string
-  /** 规则列表，每条含 enabled / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
+  /** 规则列表，每条含 enabled / title / pattern / message；为空则不拦截，默认规则由配置注入而非代码兜底。 */
   rules: Rule[]
   /** 额外拦截的工具列表，每项含 name 与 contentKey；默认值由 patch 注入，为空则只拦截内置的 edit / write。 */
   extraTools: ExtraTool[]
+  /** 会话级豁免：键为会话 id，值为该会话额外关掉的规则 pattern 列表。 */
+  sessionOverrides: Record<string, string[]>
 }
+
+/** schema 解析出的配置形态：volatile 字段是带 .get() 的稳定引用，不是普通值。 */
+interface ConfigOutput {
+  /** 总开关的实时引用。 */
+  enabled: Volatile<boolean>
+  /** 多规则文案拼接符的实时引用。 */
+  joiner: Volatile<string>
+  /** 禁 pwsh 文案的实时引用。 */
+  pwshMessage: Volatile<string>
+  /** 规则列表的实时引用。 */
+  rules: Volatile<Rule[]>
+  /** 额外拦截工具的实时引用。 */
+  extraTools: Volatile<ExtraTool[]>
+  /** 会话级豁免的实时引用。 */
+  sessionOverrides: Volatile<Record<string, string[]>>
+}
+
+/**
+ * 配置 schema。字段全部用 .volatile() 声明，设置服务才会把它们投影成表单，
+ * 浏览器端也才能读到解析后的值；默认值与 cordis.patch.yml 注入的一致，空 rules 即不拦截。
+ */
+export const Config: Schema<{
+  enabled?: boolean
+  joiner?: string
+  pwshMessage?: string
+  rules?: Rule[]
+  extraTools?: ExtraTool[]
+  sessionOverrides?: Record<string, string[]>
+}, ConfigOutput> = Schema.object({
+  enabled: Schema.boolean().default(true).volatile(),
+  joiner: Schema.string().default(' ').volatile(),
+  pwshMessage: Schema.string().default(DEFAULT_PWSH_MESSAGE).volatile(),
+  rules: Schema.array(Schema.object({
+    enabled: Schema.boolean().default(true),
+    title: Schema.string().default(''),
+    pattern: Schema.string().required(),
+    message: Schema.string().default(''),
+  })).default([]).volatile(),
+  extraTools: Schema.array(Schema.object({
+    name: Schema.string().required(),
+    contentKey: Schema.string().required(),
+  })).default([]).volatile(),
+  sessionOverrides: Schema.dict(Schema.array(Schema.string())).default({}).volatile(),
+})
 
 /**
  * 额外拦截的工具配置。
@@ -54,29 +108,58 @@ export interface ExtraTool {
   contentKey: string
 }
 
+/**
+ * 读一个配置字段。schema 里声明了 volatile 的字段会被解析成稳定引用，取值要经过 .get()；
+ * 普通字段原样返回。两种形态都接受，配置对象直接手写时也能用。
+ * @param value - 字段的原始值或引用。
+ * @returns 字段的实际值，缺省时为 undefined。
+ */
+function configValue<T>(value: unknown): T | undefined {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')
+    && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as { get: () => T | undefined }).get()
+  }
+  return value as T | undefined
+}
+
 /** 规整 cordis 配置；rules 为空即不拦截，代码不内置默认规则。丢弃缺 pattern 的条目。 */
 export function normalizeConfig(config: Partial<Config> = {}): Config {
-  const enabled = config.enabled !== undefined ? config.enabled !== false : true
-  const joiner = typeof config.joiner === 'string' ? config.joiner : ' '
-  const pwshMessage = typeof config.pwshMessage === 'string' && config.pwshMessage.trim() !== ''
-    ? config.pwshMessage
+  const fields = config as Partial<Record<keyof Config, unknown>>
+  const enabledRaw = configValue<boolean>(fields.enabled)
+  const enabled = enabledRaw !== undefined ? enabledRaw !== false : true
+  const joinerRaw = configValue<string>(fields.joiner)
+  const joiner = typeof joinerRaw === 'string' ? joinerRaw : ' '
+  const pwshRaw = configValue<string>(fields.pwshMessage)
+  const pwshMessage = typeof pwshRaw === 'string' && pwshRaw.trim() !== ''
+    ? pwshRaw
     : DEFAULT_PWSH_MESSAGE
-  const rawRules = Array.isArray(config.rules) ? config.rules : []
+  const rulesRaw = configValue<Rule[]>(fields.rules)
+  const rawRules = Array.isArray(rulesRaw) ? rulesRaw : []
   const rules: Rule[] = rawRules
     .filter((rule) => rule !== null && typeof rule === 'object'
       && typeof rule.pattern === 'string' && rule.pattern.trim() !== '')
     .map((rule) => ({
       enabled: rule.enabled !== undefined ? rule.enabled !== false : true,
+      title: typeof rule.title === 'string' ? rule.title : '',
       pattern: rule.pattern,
       message: typeof rule.message === 'string' ? rule.message : '',
     }))
-  const rawExtra = Array.isArray(config.extraTools) ? config.extraTools : []
+  const extraRaw = configValue<ExtraTool[]>(fields.extraTools)
+  const rawExtra = Array.isArray(extraRaw) ? extraRaw : []
+  const overridesRaw = configValue<Record<string, string[]>>(fields.sessionOverrides)
+  const sessionOverrides: Record<string, string[]> = {}
+  if (overridesRaw !== undefined && overridesRaw !== null && typeof overridesRaw === 'object') {
+    for (const [sessionId, patterns] of Object.entries(overridesRaw)) {
+      if (!Array.isArray(patterns)) continue
+      sessionOverrides[sessionId] = patterns.filter((item): item is string => typeof item === 'string')
+    }
+  }
   const extraTools: ExtraTool[] = rawExtra
     .filter((t) => t !== null && typeof t === 'object'
       && typeof t.name === 'string' && t.name.trim() !== ''
       && typeof t.contentKey === 'string' && t.contentKey.trim() !== '')
     .map((t) => ({ name: t.name, contentKey: t.contentKey }))
-  return { enabled, joiner, pwshMessage, rules, extraTools }
+  return { enabled, joiner, pwshMessage, rules, extraTools, sessionOverrides }
 }
 
 /** 一处匹配的位置。 */
@@ -146,10 +229,11 @@ export function buildReason(message: string, file: string, hits: Match[], patter
  * 对内容做多重报错检查。返回 null 表示放行，否则返回用配置 joiner 拼接的拒绝文本。
  * 各规则文案即填占位符后的单行结果；多条命中时按顶层 joiner 拼接，默认单个空格。
  */
-export function checkContent(content: string, config: Config, file: string): string | null {
+export function checkContent(content: string, config: Config, file: string, skipPatterns: readonly string[] = []): string | null {
   const reasons: string[] = []
   for (const rule of config.rules) {
     if (rule.enabled !== true) continue
+    if (skipPatterns.includes(rule.pattern)) continue
     const hits = findMatches(content, rule.pattern)
     if (hits.length === 0) continue
     reasons.push(buildReason(rule.message, file, hits, rule.pattern))
@@ -169,12 +253,19 @@ const BUILTIN_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write
  * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason} 替换为最近一次失败理由；
  * - 禁态只在本回合内生效，回合边界一律重置为允许 pwsh。
  * 拦截工具：edit、write、edit_remote、write_remote。
- * 配置来自 cordis 配置文件的 enabled / rules / extraTools，不再提供浏览器设置界面。
+ * 配置来自 cordis 配置文件的 enabled / rules / extraTools；浏览器端设置页可逐条开关规则，
+ * 写入仍通过 settings 服务落回 profile 的 Cordis patch，与手改配置文件等价。
  * @param ctx - 宿主上下文。
  * @param config - cordis 配置，含 enabled / rules / extraTools 可选字段。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config: Partial<Config> = {}): void {
+  // 有 settings 服务时声明本实例自带页面，设置服务不再为它生成自动表单；规则开关页由 client 半身绘制。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['settings'], (settingsCtx: any) => {
+      settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
+    })
+  }
   const source: () => Config = () => normalizeConfig(config)
   /** 合并内置和配置的 extraTools，返回完整的工具 → contentKey 映射；extraTools 中与内置同名的条目会覆盖内置。 */
   const getToolKeys = (cfg: Config): Record<string, string> => {
@@ -211,7 +302,9 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     const newContent = typeof args?.[newContentKey] === 'string' ? args[newContentKey] : undefined
     if (newContent === undefined || newContent === '') return next()
     const filePath = typeof args?.[FILE_PATH_KEY] === 'string' ? args[FILE_PATH_KEY] : '未知路径'
-    const reason = checkContent(newContent, cfg, filePath)
+    // 会话级豁免：当前会话单独关掉的规则不再检查。
+    const skipped = scope !== null ? cfg.sessionOverrides[scope] ?? [] : []
+    const reason = checkContent(newContent, cfg, filePath, skipped)
     if (reason === null) return next()
     setLocked(scope, reason)
     return { kind: 'deny', reason }

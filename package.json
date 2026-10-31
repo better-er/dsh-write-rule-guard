@@ -1,7 +1,7 @@
 {
   "name": "dsh-write-rule-guard",
-  "version": "0.3.3",
-  "description": "「DSH·写入规则守卫」：禁止在 edit/write 写入内容中使用匹配正则的字符，extraTools 可额外配置拦截更多工具。可在 cordis 配置文件里配置正则与报错文案。host 单半身。",
+  "version": "0.4.0",
+  "description": "「DSH·写入规则守卫」：禁止在 edit/write 写入内容中使用匹配正则的字符，extraTools 可额外配置拦截更多工具。可在设置页逐条开关规则，也可在会话视图的「写入规则」页只给当前会话关掉条目。",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -25,14 +25,21 @@
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
-    ".": "./lib/index.js",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
-    "lib/index.js.map",
+    "lib/index.d.ts",
+    "lib/client.js",
+    "lib/client.js.map",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -42,21 +49,43 @@
     "node": ">=26.3.1"
   },
   "scripts": {
-    "prepare": "node build.mjs",
-    "build": "node build.mjs",
-    "watch": "node build.mjs --watch",
+    "prepare": "tsdown",
+    "build": "tsdown",
+    "watch": "tsdown --watch",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.2.0-rc.2"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-settings": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@types/node": "^22.20.1",
+    "@types/react": "~18.3.1",
+    "tsdown": "^0.23.0",
     "typescript": "^5.9.3"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   }
 }

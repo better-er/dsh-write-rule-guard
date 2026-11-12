@@ -1,6 +1,6 @@
 {
   "name": "dsh-write-rule-guard",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "「DSH·写入规则守卫」：禁止在 edit/write 写入内容中使用匹配正则的字符，extraTools 可额外配置拦截更多工具。可在设置页逐条开关规则，也可在会话视图的「写入规则」页只给当前会话关掉条目。",
   "keywords": [
     "deepseek-harness",

@@ -1,9 +1,11 @@
 # dsh-write-rule-guard bundle patch：把本插件插进 profile 的 layer stack。
 # profile 引用本 bundle 或 dev_install_package 时自动挂载，全局生效。
-# 本 entry 的 config 即安装后的默认值；enabled / joiner / rules / extraTools 都可在 cordis 配置文件里直接对照修改，
+# 本 entry 的 config 即安装后的默认值；enabled / joiner / rules / extraTools / exemptErrors 都可在 cordis 配置文件里直接对照修改，
 # 也可在设置页「写入规则守卫」里逐条开关规则，两者改的是同一份配置。见 README「配置」。
 # 默认规则匹配全角圆括号，message 支持 {file}、{count}、{lines}、{pattern} 占位符；title 只在设置页显示。
 # extraTools 默认拦截 dsh-remote-file-system 的 edit_remote 与 write_remote；给空数组则只拦内置的 edit / write。
+# exemptErrors 是放过的失败：错误信息包含其中任一字符串时不进入禁 pwsh 态，状态保持原样。
+# 默认放过 old_string 与 new_string 相同这类参数错误——它说明模型没改到东西，与绕过规则无关。
 - insert:
     - id: dsh-write-rule-guard
       name: 'dsh-write-rule-guard'
@@ -16,6 +18,8 @@
             contentKey: new_string
           - name: write_remote
             contentKey: content
+        exemptErrors:
+          - 'old_string and new_string must differ'
         rules:
           - enabled: true
             title: 全角括号

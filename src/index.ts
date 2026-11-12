@@ -3,8 +3,9 @@
  * 状态机：被拦截工具失败时把当前回合切到「禁用 pwsh」态，之后某次写入成功则解除禁用。
  * 工具真正执行前拦截写入内容；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果。
  * 「失败」指内容命中规则被本插件拒掉、或执行返回错误；「成功」指内容未命中规则且该调用真实执行无错。
+ * 错误信息命中 exemptErrors 任一字符串的失败不计入状态，既不禁用也不解除，状态保持原样。
  * 禁 pwsh 态只在本回合内生效，回合边界一律重置为允许。
- * 配置结构：enabled 总开关 + rules 规则列表 + extraTools 额外工具列表。
+ * 配置结构：enabled 总开关 + rules 规则列表 + extraTools 额外工具列表 + exemptErrors 放过的失败列表。
  * 遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则 message 决定，多规则命中时按顶层 joiner 拼接。
  * 配置经 cordis 配置文件注入，正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
  * extraTools 让用户自行配置额外拦截的工具与参数名，默认值由 cordis.patch.yml 注入，代码不兜底。
@@ -51,6 +52,8 @@ export interface Config {
   extraTools: ExtraTool[]
   /** 会话级豁免：键为会话 id，值为该会话额外关掉的规则 pattern 列表。 */
   sessionOverrides: Record<string, string[]>
+  /** 放过的失败：写入工具返回的错误信息包含其中任一字符串时不进入禁 pwsh 态，状态保持原样。 */
+  exemptErrors: string[]
 }
 
 /** schema 解析出的配置形态：volatile 字段是带 .get() 的稳定引用，不是普通值。 */
@@ -67,6 +70,8 @@ interface ConfigOutput {
   extraTools: Volatile<ExtraTool[]>
   /** 会话级豁免的实时引用。 */
   sessionOverrides: Volatile<Record<string, string[]>>
+  /** 放过的失败的实时引用。 */
+  exemptErrors: Volatile<string[]>
 }
 
 /**
@@ -80,6 +85,7 @@ export const Config: Schema<{
   rules?: Rule[]
   extraTools?: ExtraTool[]
   sessionOverrides?: Record<string, string[]>
+  exemptErrors?: string[]
 }, ConfigOutput> = Schema.object({
   enabled: Schema.boolean().default(true).volatile(),
   joiner: Schema.string().default(' ').volatile(),
@@ -95,6 +101,7 @@ export const Config: Schema<{
     contentKey: Schema.string().required(),
   })).default([]).volatile(),
   sessionOverrides: Schema.dict(Schema.array(Schema.string())).default({}).volatile(),
+  exemptErrors: Schema.array(Schema.string()).default([]).volatile(),
 })
 
 /**
@@ -159,7 +166,10 @@ export function normalizeConfig(config: Partial<Config> = {}): Config {
       && typeof t.name === 'string' && t.name.trim() !== ''
       && typeof t.contentKey === 'string' && t.contentKey.trim() !== '')
     .map((t) => ({ name: t.name, contentKey: t.contentKey }))
-  return { enabled, joiner, pwshMessage, rules, extraTools, sessionOverrides }
+  const exemptRaw = configValue<string[]>(fields.exemptErrors)
+  const exemptErrors = (Array.isArray(exemptRaw) ? exemptRaw : [])
+    .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+  return { enabled, joiner, pwshMessage, rules, extraTools, sessionOverrides, exemptErrors }
 }
 
 /** 一处匹配的位置。 */
@@ -249,6 +259,7 @@ const BUILTIN_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write
  * 插件入口：按被拦截工具的成败维护「禁 pwsh」状态机。
  * 状态机规则：
  * - 被拦截工具失败，即内容命中规则被拦或真实执行返回错误 → 进入禁 pwsh 态，记录该失败理由；
+ * - 失败理由命中 exemptErrors 任一字符串 → 不计入状态，既不禁用也不解除，状态保持原样；
  * - 被拦截工具成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态；
  * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason} 替换为最近一次失败理由；
  * - 禁态只在本回合内生效，回合边界一律重置为允许 pwsh。
@@ -321,6 +332,8 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
       const message = typeof result?.error?.message === 'string' && result.error.message.trim() !== ''
         ? result.error.message
         : '写入工具执行失败'
+      // 放过的失败：错误信息命中豁免串时维持原状态，既不解锁也不锁定。
+      if (cfg.exemptErrors.some((item) => message.includes(item))) return next()
       setLocked(scope, message)
     } else if (scope !== null) {
       // 真实执行成功 → 解除禁 pwsh 态

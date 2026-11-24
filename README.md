@@ -1,24 +1,24 @@
 # DSH·写入规则守卫
 
-在写入类工具执行前按配置的正则拦截写入内容，命中即拒绝并把 `pwsh` 切到禁用态，防止改用 `pwsh` 绕过；被拦截工具一旦成功执行，本回合内即解除禁用，回合结束恢复允许。执行失败默认同样进入禁用态，但错误信息命中 `exemptErrors` 时不算失败，状态保持原样。
+在写入类工具执行前按配置的正则拦截写入内容，命中即拒绝并把 `pwsh` 切到禁用态，防止改用 `pwsh` 绕过；被拦截工具一旦成功执行，本回合内即解除禁用，回合结束恢复允许。执行失败默认同样进入禁用态，但错误信息命中 `exemptErrors` 时不算失败，状态保持原样。拦截模式 `mode` 可选 `all` 或 `guard`：默认 `all` 沿用旧行为，任何失败都禁用；`guard` 只在本插件规则拦下后禁用，其他报错不管。解禁方式两种模式相同。
 
 默认规则与工具范围由 `cordis.patch.yml` 随安装注入，匹配全角圆括号，默认覆盖 `edit` / `write` / `edit_remote` / `write_remote`，都可在配置文件里改。代码不内置默认规则，`rules` 为空即不拦截。
 
-设置页里有一页「写入规则守卫」，逐条列出规则，每条一个开关，另有总开关。开关写入活动 profile 的 Cordis patch，和手改配置文件等价，关掉的规则对所有会话都不再检查。
+设置页里有一页「写入规则守卫」，逐条列出规则，每条一个开关，另有总开关与拦截模式。开关与模式写入活动 profile 的 Cordis patch，和手改配置文件等价，对所有会话生效。
 
-只想在某个会话里临时关掉某条规则时，切到会话视图的「写入规则」页，按条目开关。它只写当前会话的豁免，不碰全局设置；豁免按规则 pattern 记在 `sessionOverrides` 里。
+只想在某个会话里单独设置时，切到会话视图的「写入规则」页，可逐条关掉规则，也可单独选拦截模式。它只写当前会话的豁免与模式，不碰全局设置；豁免按规则 pattern 记在 `sessionOverrides`，模式按会话 id 记在 `sessionModes`，选「跟随全局」即回到全局模式。
 
 ## 工作方式
 
 设置页由 client 半身绘制，通过 `settings` 远端的 `describe` 与 `update` 读写配置，不另存状态。
 
-host 半身 `lib/index.js` 按 `edit` / `write` / `edit_remote` / `write_remote` 的成败维护「禁 `pwsh`」状态机。`pre-execute` 里拦截 `edit` / `write` / `edit_remote` / `write_remote` 的写入内容，按配置的 `enabled` / `rules` 逐条检查，命中即视为失败并进入禁 `pwsh` 态；`post-execute` 里按真实执行结果收口状态——返回错误视为失败继续禁用，执行成功则解除禁用；错误信息命中 `exemptErrors` 的失败跳过收口，既不禁用也不解除。`pwsh` 的放行与否由当前禁态决定。
+host 半身 `lib/index.js` 按 `edit` / `write` / `edit_remote` / `write_remote` 的成败维护「禁 `pwsh`」状态机。`pre-execute` 里拦截 `edit` / `write` / `edit_remote` / `write_remote` 的写入内容，按配置的 `enabled` / `rules` 逐条检查，命中即视为失败并进入禁 `pwsh` 态；`post-execute` 里按真实执行结果收口状态——`all` 模式下返回错误视为失败继续禁用，`guard` 模式下错误不改变状态，执行成功则两种模式都解除禁用；错误信息命中 `exemptErrors` 的失败跳过收口，既不禁用也不解除。`pwsh` 的放行与否由当前禁态决定。
 
 ## 拦截范围
 
-- 工具：常态拦 `edit` 和 `write` 的写入内容，patch 默认再拦 [dsh-remote-file-system](https://github.com/better-er/dsh-remote-file-system) 的 `edit_remote` 与 `write_remote`，也可自行配置更多工具；被拦截工具失败后，后续的 `pwsh` 进入禁用态被拦，文案由 `pwshMessage` 决定，缺省用内置默认。此后某次写入工具真实执行成功即解除禁用，回合结束一律回到允许。
+- 工具：常态拦 `edit` 和 `write` 的写入内容，patch 默认再拦 [dsh-remote-file-system](https://github.com/better-er/dsh-remote-file-system) 的 `edit_remote` 与 `write_remote`，也可自行配置更多工具；被规则拦下或按 `all` 模式计入失败后，后续的 `pwsh` 进入禁用态被拦，文案由 `pwshMessage` 决定，缺省用内置默认。此后某次写入工具真实执行成功即解除禁用，回合结束一律回到允许。
 - 字段：`edit` 的 `new_string`、`write` 的 `content`；`extraTools` 的工具按各自 `contentKey` 提取新内容，默认 `edit_remote` 取 `new_string`、`write_remote` 取 `content`。
-- 场景：默认全局所有会话生效，`run_code` 内嵌的 `edit` / `write` 子调用同样被捕获；会话视图的「写入规则」页可以只给当前会话关掉指定条目。
+- 场景：默认全局所有会话生效，`run_code` 内嵌的 `edit` / `write` 子调用同样被捕获；会话视图的「写入规则」页可以只给当前会话关掉指定条目或单独设置拦截模式。
 
 ## 宣传片
 
@@ -54,19 +54,21 @@ dsh plugin --profile web remove dsh-write-rule-guard
 
 ## 配置
 
-插件通过 cordis 配置注入，默认 `enabled`: true。规则列表 `rules` 由 `cordis.patch.yml` 随安装带入一条匹配全角圆括号的默认规则；代码不兜底默认，`rules` 为空即不拦截。`extraTools` 由 `cordis.patch.yml` 随安装带入 [dsh-remote-file-system](https://github.com/better-er/dsh-remote-file-system) 的 `edit_remote` 与 `write_remote`，给空数组则只拦内置的 `edit` / `write`。
+插件通过 cordis 配置注入，默认 `enabled`: true、`mode`: `all`。规则列表 `rules` 由 `cordis.patch.yml` 随安装带入一条匹配全角圆括号的默认规则；代码不兜底默认，`rules` 为空即不拦截。`extraTools` 由 `cordis.patch.yml` 随安装带入 [dsh-remote-file-system](https://github.com/better-er/dsh-remote-file-system) 的 `edit_remote` 与 `write_remote`，给空数组则只拦内置的 `edit` / `write`。
 
 配置文件位于 `~/.dsh/profiles/web/cordis.patch.yml`，在此文件中添加对本插件的 config 覆盖即可。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `enabled` | true | 是否启用拦截 |
+| `mode` | `all` | 拦截模式。`all` 是旧行为，任何被拦截工具的失败都禁用 `pwsh`，包括规则拦下与执行报错；`guard` 只认规则拦下，其他执行报错不改变状态。两种模式都在写入成功后解除禁用 |
+| `sessionModes` | `{}` | 会话级拦截模式，键为会话 id，值为 `all` / `guard` / `inherit`。`inherit` 或未设置时跟随全局 `mode`。由会话视图的「写入规则」页写入 |
 | `joiner` | 单个空格 | 多规则命中时拼接各规则文案的分隔符，可填空格或 \n 等，由配置决定形态 |
 | `pwshMessage` | 内置默认文案 | 处于禁 `pwsh` 态时拦截 `pwsh` 的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则回落到内置默认。禁 `pwsh` 态指本回合内某次被拦截工具失败 |
 | `rules` | patch 注入的单条匹配全角圆括号的默认规则，为空则不拦截 | 规则列表，每条含 `enabled` / `title` / `pattern` / `message`。`title` 只用于设置页显示，留空则显示正则本身 |
 | `extraTools` | patch 注入的 `edit_remote` 与 `write_remote` | 额外拦截的工具列表，每项含 `name` 和 `contentKey`；给空数组则只拦截内置的 `edit` / `write`。文件路径参数固定按 `file_path` 读取，路径字段名不同的工具命中规则时 {file} 会填成「未知路径」；与内置 `edit` / `write` 同名的条目会覆盖内置映射 |
 | `sessionOverrides` | `{}` | 会话级豁免，键为会话 id，值为该会话关掉的规则 `pattern` 列表。由会话视图的「写入规则」页写入 |
-| `exemptErrors` | patch 注入 `old_string and new_string must differ` | 放过的失败，字符串列表。写入工具返回的错误信息包含其中任一字符串时不进入禁 `pwsh` 态，状态保持原样；给空数组则任何失败都禁用 |
+| `exemptErrors` | patch 注入 `old_string and new_string must differ` | 放过的失败，字符串列表。写入工具返回的错误信息包含其中任一字符串时不进入禁 `pwsh` 态，状态保持原样；给空数组则任何失败都禁用。只在 `all` 模式有实际作用，`guard` 模式下执行报错本来就不计 |
 
 安装即随 `cordis.patch.yml` 注入一条默认规则，可直接对照修改；`rules` 为空则不拦截。设置页的开关与配置文件改的是同一份配置，两边都改以 profile 的覆盖层为准。
 
@@ -74,7 +76,7 @@ dsh plugin --profile web remove dsh-write-rule-guard
 
 `pwshMessage` 缺省或为空时回落代码内置默认文案，patch 也注入了同款，可在配置文件里改成别的写法；想带上原写入理由就在文案里加 {reason} 占位符。
 
-配置示例，等价于 patch 注入的默认规则与工具范围：
+配置示例，等价于 patch 注入的默认规则与工具范围。示例省略 `mode` 与 `sessionModes` 时分别按 `all` 与 `{}` 处理：
 
 > patch 的 `config` 是整块替换而不是逐键合并，所以在 profile 里覆盖本插件的 config 时必须重述 `extraTools`，否则会退回空数组。
 
@@ -82,6 +84,8 @@ dsh plugin --profile web remove dsh-write-rule-guard
 - id: dsh-write-rule-guard
   config:
     enabled: true
+    mode: all
+    sessionModes: {}
     joiner: ' '
     pwshMessage: 'あー！坏孩子被抓住啦！用 pwsh 绕过可不行哦！先改对了再来吧！'
     rules:
@@ -106,15 +110,15 @@ dsh plugin --profile web remove dsh-write-rule-guard
 
 | 事件 | 结果 |
 | --- | --- |
-| 被拦截工具内容命中规则被拦 | 进入禁 `pwsh` 态，记录该次规则理由 |
-| 被拦截工具真实执行返回错误 | 进入禁 `pwsh` 态，记录该错误信息 |
+| 被拦截工具内容命中规则被拦 | 进入禁 `pwsh` 态，记录该次规则理由，两种模式相同 |
+| 被拦截工具真实执行返回错误 | `all` 模式进入禁 `pwsh` 态并记录错误信息；`guard` 模式不管，状态保持原样 |
 | 失败的错误信息命中 `exemptErrors` | 不算失败，状态保持原样 |
 | 被拦截工具真实执行成功 | 解除禁 `pwsh` 态，本回合后续 `pwsh` 放行 |
 | 回合开始或结束 | 一律重置为允许 `pwsh` |
 
-「成功」按真实执行结果判定，需要内容先过规则检查、再在 `post-execute` 看到无错误的返回值才算数；纯内容通过但执行阶段失败仍算失败。规则拦掉的调用也会以错误结果流经 `post-execute`，与执行失败走同一收口，语义一致。
+「成功」按真实执行结果判定，需要内容先过规则检查、再在 `post-execute` 看到无错误的返回值才算数。纯内容通过但执行阶段失败时，两种模式判断不同：`all` 模式算失败并禁用；`guard` 模式不算失败，保持原状态。规则拦掉的调用也会以错误结果流经 `post-execute`，禁态已在 `pre-execute` 设好，两种模式都不再重复处理。
 
-命中 `exemptErrors` 的失败被放过：既不新设禁态，也不清除已有的禁态。放过的多是参数错误，比如 `edit` 的 `old_string` 与 `new_string` 相同，它只说明这次没改到东西，与内容是否合规无关。
+命中 `exemptErrors` 的失败被放过：既不新设禁态，也不清除已有的禁态。放过的多是参数错误，比如 `edit` 的 `old_string` 与 `new_string` 相同，它只说明这次没改到东西，与内容是否合规无关。`guard` 模式下执行报错一律不计，`exemptErrors` 只影响 `all` 模式。
 
 **为什么不直接检查 `pwsh` 要写什么**：做不到。重定向、`Out-File`、`Set-Content`、变量、管道、运行时拼出来的命令，写文件的写法无穷多，很多内容还要等运行时才算得出来，静态检查拿不到，列黑名单必漏。所以这里不去猜命令的语义，只在「本回合已经出过一次写入失败」时把整条命令行先关上。规则查的始终是写入工具的内容，`pwsh` 本身从不参与内容匹配。
 

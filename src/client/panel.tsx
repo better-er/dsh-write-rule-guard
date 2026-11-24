@@ -6,10 +6,10 @@
  */
 
 import * as React from 'react'
-import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  NS, failureText, readEnabled, readRules, ruleKey, ruleOn, ruleTitle,
-  type RuleValue, type SettingsRemote,
+  GLOBAL_MODE_OPTIONS, NS, failureText, readEnabled, readMode, readRules, ruleKey, ruleOn, ruleTitle,
+  type GuardMode, type RuleValue, type SettingsRemote,
 } from './settings'
 
 interface PanelProps {
@@ -21,6 +21,7 @@ interface PanelState {
   message: string | null
   writable: boolean
   enabled: boolean
+  mode: GuardMode
   rules: RuleValue[]
 }
 
@@ -30,6 +31,7 @@ export function RuleGuardPanel({ remote }: PanelProps): React.ReactElement {
     message: null,
     writable: false,
     enabled: true,
+    mode: 'all',
     rules: [],
   })
   const revisionRef = React.useRef(0)
@@ -64,6 +66,7 @@ export function RuleGuardPanel({ remote }: PanelProps): React.ReactElement {
         message: null,
         writable: result.value.writable,
         enabled: readEnabled(view.value),
+        mode: readMode(view.value),
         rules: readRules(view.value),
       })
     })()
@@ -92,6 +95,7 @@ export function RuleGuardPanel({ remote }: PanelProps): React.ReactElement {
       message: null,
       writable: prev.writable,
       enabled: readEnabled(result.value.value),
+      mode: readMode(result.value.value),
       rules: readRules(result.value.value),
     }))
   }, [remote])
@@ -107,7 +111,7 @@ export function RuleGuardPanel({ remote }: PanelProps): React.ReactElement {
     <div className="wrg-page wrg-panel">
       <p className="wrg-desc wrg-intro">
         规则命中的写入会被直接拒绝，并让本回合的 pwsh 进入禁用态，直到下一次写入成功。
-        这里的开关对全部会话生效；只想在某个会话里临时关掉某条规则时，切到会话视图的「写入规则」页。
+        这里的开关与模式对全部会话生效；只想在某个会话里单独设置时，切到会话视图的「写入规则」页。
       </p>
 
       <div className="wrg-row">
@@ -120,6 +124,23 @@ export function RuleGuardPanel({ remote }: PanelProps): React.ReactElement {
           disabled={disabled}
           label="启用拦截"
           onChange={(next: boolean) => { void save({ enabled: next }) }}
+        />
+      </div>
+
+      <div className="wrg-row">
+        <div className="wrg-text">
+          <div className="wrg-title">拦截模式</div>
+          <div className="wrg-desc">
+            「任何失败」是旧行为，写入被规则拦下或执行报错都禁用 pwsh；「仅规则拦截」只在规则拦下后禁用 pwsh。
+          </div>
+        </div>
+        <SegmentedControl
+          id="write-rule-guard-mode"
+          value={state.mode}
+          options={GLOBAL_MODE_OPTIONS}
+          label="拦截模式"
+          disabled={disabled}
+          onChange={(next: GuardMode) => { void save({ mode: next }) }}
         />
       </div>
 

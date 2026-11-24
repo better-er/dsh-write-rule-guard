@@ -5,10 +5,11 @@
  */
 
 import * as React from 'react'
-import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  NS, failureText, readOverrides, readRules, ruleKey, ruleOn, ruleTitle,
-  type RuleValue, type SettingsRemote,
+  NS, SESSION_MODE_OPTIONS, failureText, modeTitle, readMode, readOverrides, readRules, readSessionMode,
+  ruleKey, ruleOn, ruleTitle,
+  type GuardMode, type RuleValue, type SessionGuardMode, type SettingsRemote,
 } from './settings'
 
 interface SessionViewProps {
@@ -22,6 +23,8 @@ interface ViewState {
   writable: boolean
   rules: RuleValue[]
   off: string[]
+  mode: SessionGuardMode
+  globalMode: GuardMode
 }
 
 export function SessionRuleView({ sessionId, remote }: SessionViewProps): React.ReactElement {
@@ -31,6 +34,8 @@ export function SessionRuleView({ sessionId, remote }: SessionViewProps): React.
     writable: false,
     rules: [],
     off: [],
+    mode: 'inherit',
+    globalMode: 'all',
   })
   const revisionRef = React.useRef(0)
 
@@ -66,6 +71,8 @@ export function SessionRuleView({ sessionId, remote }: SessionViewProps): React.
         writable: result.value.writable,
         rules: readRules(namespace.value),
         off: overrides[sessionId] ?? [],
+        mode: readSessionMode(namespace.value, sessionId),
+        globalMode: readMode(namespace.value),
       })
     })()
     return () => {
@@ -104,6 +111,35 @@ export function SessionRuleView({ sessionId, remote }: SessionViewProps): React.
       writable: true,
       rules: readRules(result.value.value),
       off: overrides[sessionId] ?? [],
+      mode: readSessionMode(result.value.value, sessionId),
+      globalMode: readMode(result.value.value),
+    })
+  }
+
+  const saveMode = async (next: SessionGuardMode): Promise<void> => {
+    if (remote === undefined || sessionId === undefined || sessionId === '') return
+    setState((prev) => ({ ...prev, status: 'saving', message: null, mode: next }))
+    let result
+    try {
+      result = await remote.update(NS, { sessionModes: { [sessionId]: next } }, revisionRef.current)
+    } catch (error) {
+      setState((prev) => ({ ...prev, status: 'error', message: String(error) }))
+      return
+    }
+    if (!result.ok) {
+      setState((prev) => ({ ...prev, status: 'error', message: failureText(result.error) }))
+      return
+    }
+    revisionRef.current = result.value.revision
+    const overrides = readOverrides(result.value.value)
+    setState({
+      status: 'ready',
+      message: null,
+      writable: true,
+      rules: readRules(result.value.value),
+      off: overrides[sessionId] ?? [],
+      mode: readSessionMode(result.value.value, sessionId),
+      globalMode: readMode(result.value.value),
     })
   }
 
@@ -117,12 +153,29 @@ export function SessionRuleView({ sessionId, remote }: SessionViewProps): React.
     <div className="wrg-view">
       <div className="wrg-page wrg-inner">
         <p className="wrg-desc wrg-intro">
-        这里只影响当前会话。关掉的条目在这个会话里不再检查，设置页的全局开关不受影响。
+        这里只影响当前会话。关掉的条目在这个会话里不再检查，模式也只覆盖本会话，设置页的全局设置不受影响。
       </p>
 
       {state.status === 'error' && state.message !== null
         ? <p className="wrg-error">{state.message}</p>
         : null}
+
+      <div className="wrg-row">
+        <div className="wrg-text">
+          <div className="wrg-title">拦截模式</div>
+          <div className="wrg-desc">
+            全局当前是「{modeTitle(state.globalMode)}」。选「跟随全局」时随设置页变动；单独选择后只影响本会话。
+          </div>
+        </div>
+        <SegmentedControl
+          id="write-rule-guard-session-mode"
+          value={state.mode}
+          options={SESSION_MODE_OPTIONS}
+          label="本会话拦截模式"
+          disabled={!state.writable || busy}
+          onChange={(next: SessionGuardMode) => { void saveMode(next) }}
+        />
+      </div>
 
       {state.rules.length === 0
         ? <p className="wrg-desc">当前没有配置任何规则。</p>

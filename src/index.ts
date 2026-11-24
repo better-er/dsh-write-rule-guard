@@ -4,8 +4,10 @@
  * 工具真正执行前拦截写入内容；拒绝文案完全由各规则 message 决定，填完占位符后即单行结果。
  * 「失败」指内容命中规则被本插件拒掉、或执行返回错误；「成功」指内容未命中规则且该调用真实执行无错。
  * 错误信息命中 exemptErrors 任一字符串的失败不计入状态，既不禁用也不解除，状态保持原样。
+ * 拦截模式 mode 决定非规则拦截的失败算不算：all 是旧行为，任何失败都禁用 pwsh；guard 只认规则拦截。
+ * 会话级 sessionModes 按会话覆盖 mode，值为 inherit 时跟随全局。
  * 禁 pwsh 态只在本回合内生效，回合边界一律重置为允许。
- * 配置结构：enabled 总开关 + rules 规则列表 + extraTools 额外工具列表 + exemptErrors 放过的失败列表。
+ * 配置结构：enabled 总开关 + mode 拦截模式 + sessionModes 会话模式 + rules 规则列表 + extraTools 额外工具列表 + exemptErrors 放过的失败列表。
  * 遍历所有启用的规则，任一命中即拦；拒绝文案完全由各规则 message 决定，多规则命中时按顶层 joiner 拼接。
  * 配置经 cordis 配置文件注入，正则匹配、报错文案均来自配置文件；代码不内置默认规则，rules 为空即不拦截。
  * extraTools 让用户自行配置额外拦截的工具与参数名，默认值由 cordis.patch.yml 注入，代码不兜底。
@@ -38,10 +40,20 @@ export interface Rule {
   message: string
 }
 
+/** 拦截模式：all 为旧行为，非规则拦截的失败同样禁用 pwsh；guard 只认规则拦截。 */
+export type GuardMode = 'all' | 'guard'
+
+/** 会话级拦截模式：inherit 表示跟随全局 mode。 */
+export type SessionGuardMode = GuardMode | 'inherit'
+
 /** 插件解析后的配置。 */
 export interface Config {
   /** 总开关：是否启用拦截。 */
   enabled: boolean
+  /** 全局拦截模式，默认 all 即旧行为；guard 只在本插件规则拦截后禁用 pwsh。 */
+  mode: GuardMode
+  /** 会话级拦截模式，键为会话 id，值为 all / guard / inherit，缺省跟随全局。 */
+  sessionModes: Record<string, SessionGuardMode>
   /** 多规则命中时拼接各规则文案所用的分隔符，默认单个空格；填 \n 可换行，由配置决定。 */
   joiner: string
   /** 处于禁 pwsh 态时拦截 pwsh 所用的文案，支持 {reason} 占位符嵌入最近一次失败理由；空则用内置默认文案。禁 pwsh 态指本回合内某次被拦截工具失败。 */
@@ -60,6 +72,10 @@ export interface Config {
 interface ConfigOutput {
   /** 总开关的实时引用。 */
   enabled: Volatile<boolean>
+  /** 全局拦截模式的实时引用。 */
+  mode: Volatile<GuardMode>
+  /** 会话级拦截模式的实时引用。 */
+  sessionModes: Volatile<Record<string, SessionGuardMode>>
   /** 多规则文案拼接符的实时引用。 */
   joiner: Volatile<string>
   /** 禁 pwsh 文案的实时引用。 */
@@ -80,6 +96,8 @@ interface ConfigOutput {
  */
 export const Config: Schema<{
   enabled?: boolean
+  mode?: GuardMode
+  sessionModes?: Record<string, SessionGuardMode>
   joiner?: string
   pwshMessage?: string
   rules?: Rule[]
@@ -88,6 +106,8 @@ export const Config: Schema<{
   exemptErrors?: string[]
 }, ConfigOutput> = Schema.object({
   enabled: Schema.boolean().default(true).volatile(),
+  mode: Schema.union([Schema.const('all'), Schema.const('guard')]).default('all').volatile(),
+  sessionModes: Schema.dict(Schema.union([Schema.const('all'), Schema.const('guard'), Schema.const('inherit')])).default({}).volatile(),
   joiner: Schema.string().default(' ').volatile(),
   pwshMessage: Schema.string().default(DEFAULT_PWSH_MESSAGE).volatile(),
   rules: Schema.array(Schema.object({
@@ -134,6 +154,15 @@ export function normalizeConfig(config: Partial<Config> = {}): Config {
   const fields = config as Partial<Record<keyof Config, unknown>>
   const enabledRaw = configValue<boolean>(fields.enabled)
   const enabled = enabledRaw !== undefined ? enabledRaw !== false : true
+  const modeRaw = configValue<string>(fields.mode)
+  const mode: GuardMode = modeRaw === 'guard' ? 'guard' : 'all'
+  const sessionModesRaw = configValue<Record<string, SessionGuardMode>>(fields.sessionModes)
+  const sessionModes: Record<string, SessionGuardMode> = {}
+  if (sessionModesRaw !== undefined && sessionModesRaw !== null && typeof sessionModesRaw === 'object') {
+    for (const [sessionId, value] of Object.entries(sessionModesRaw)) {
+      if (value === 'all' || value === 'guard' || value === 'inherit') sessionModes[sessionId] = value
+    }
+  }
   const joinerRaw = configValue<string>(fields.joiner)
   const joiner = typeof joinerRaw === 'string' ? joinerRaw : ' '
   const pwshRaw = configValue<string>(fields.pwshMessage)
@@ -169,7 +198,7 @@ export function normalizeConfig(config: Partial<Config> = {}): Config {
   const exemptRaw = configValue<string[]>(fields.exemptErrors)
   const exemptErrors = (Array.isArray(exemptRaw) ? exemptRaw : [])
     .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
-  return { enabled, joiner, pwshMessage, rules, extraTools, sessionOverrides, exemptErrors }
+  return { enabled, mode, sessionModes, joiner, pwshMessage, rules, extraTools, sessionOverrides, exemptErrors }
 }
 
 /** 一处匹配的位置。 */
@@ -258,16 +287,18 @@ const BUILTIN_CONTENT_KEYS: Record<string, string> = { edit: 'new_string', write
 /**
  * 插件入口：按被拦截工具的成败维护「禁 pwsh」状态机。
  * 状态机规则：
- * - 被拦截工具失败，即内容命中规则被拦或真实执行返回错误 → 进入禁 pwsh 态，记录该失败理由；
+ * - 内容命中规则被拦 → 一律进入禁 pwsh 态，记录该规则理由，两种模式相同；
+ * - 真实执行返回错误 → all 模式进入禁 pwsh 态；guard 模式不管，状态保持原样；
  * - 失败理由命中 exemptErrors 任一字符串 → 不计入状态，既不禁用也不解除，状态保持原样；
- * - 被拦截工具成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态；
+ * - 被拦截工具成功，即内容未命中规则且真实执行无错 → 解除禁 pwsh 态，两种模式相同；
  * - 处于禁 pwsh 态时，本会话的 pwsh 一律拦截，文案用 pwshMessage 并把 {reason} 替换为最近一次失败理由；
  * - 禁态只在本回合内生效，回合边界一律重置为允许 pwsh。
  * 拦截工具：edit、write、edit_remote、write_remote。
- * 配置来自 cordis 配置文件的 enabled / rules / extraTools；浏览器端设置页可逐条开关规则，
+ * 拦截模式由全局 mode 决定，会话级 sessionModes 优先，值为 inherit 时回落到全局。
+ * 配置来自 cordis 配置文件的 enabled / mode / rules / extraTools；浏览器端设置页可逐条开关规则与选择模式，
  * 写入仍通过 settings 服务落回 profile 的 Cordis patch，与手改配置文件等价。
  * @param ctx - 宿主上下文。
- * @param config - cordis 配置，含 enabled / rules / extraTools 可选字段。
+ * @param config - cordis 配置，含 enabled / mode / sessionModes / rules / extraTools 可选字段。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config: Partial<Config> = {}): void {
@@ -283,6 +314,12 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     const keys = { ...BUILTIN_CONTENT_KEYS }
     for (const t of cfg.extraTools) keys[t.name] = t.contentKey
     return keys
+  }
+  /** 取本会话生效的拦截模式：会话覆盖优先，inherit 或未设置时回落到全局。 */
+  const modeOf = (cfg: Config, scope: string | null): GuardMode => {
+    if (scope === null) return cfg.mode
+    const sessionMode = cfg.sessionModes[scope]
+    return sessionMode === 'all' || sessionMode === 'guard' ? sessionMode : cfg.mode
   }
   const locked = new Map<string, string>()
   // 回合开始或结束时重置禁态，避免泄漏到下一个用户回合；禁态也会在成功写入后解除
@@ -321,7 +358,7 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     return { kind: 'deny', reason }
   })
   // post-execute：内容未被规则拦的写入工具走真实执行，用结果成败收口状态。
-  // 规则拦掉的调用也会以 isError 结果流经此处，同样进入失败态，语义一致。
+  // 规则拦掉的调用也会以 isError 结果流经此处，禁态已在 pre-execute 设好，无需重复处理。
   ctx.on('tools/post-execute', async (exec: any, result: any, next: () => Promise<unknown>) => {
     const cfg = source()
     if (cfg.enabled !== true) return next()
@@ -329,6 +366,8 @@ export function apply(ctx: any, config: Partial<Config> = {}): void {
     if (!toolKeys[exec.name]) return next()
     const scope = exec.agent?.id ?? null
     if (result?.isError === true) {
+      // guard 模式只认规则拦截，普通执行失败不管，状态保持原样。
+      if (modeOf(cfg, scope) === 'guard') return next()
       const message = typeof result?.error?.message === 'string' && result.error.message.trim() !== ''
         ? result.error.message
         : '写入工具执行失败'
